@@ -99,8 +99,8 @@ def save_public_metadata(db, data):
           content_id INTEGER PRIMARY KEY REFERENCES contents(id),
           payload TEXT NOT NULL
         )''')
-        content_id = add_content(db,'TikTok',data['caption'][:100] or 'TikTok公開情報',
-                                 url=data['url'],author=data['author'],body=data['caption'])
+        content_id = add_content(db,'TikTok',(data.get('caption') or '')[:100] or 'TikTok動画 ' + data['url'].rsplit('/',1)[-1],
+                                 url=data['url'],author=data.get('author') or '',body=data.get('caption') or '')
         db.execute('UPDATE contents SET source=? WHERE id=?',(data['provider'],content_id))
         db.execute('INSERT INTO public_metadata(content_id,payload) VALUES(?,?)',(content_id,json.dumps(data,ensure_ascii=False)))
     return content_id
@@ -112,3 +112,13 @@ def public_metadata(db, content_id):
         return None
     row = db.execute('SELECT payload FROM public_metadata WHERE content_id=?',(content_id,)).fetchone()
     return json.loads(row['payload']) if row else None
+
+
+def metadata_status(db, content_id):
+    data = public_metadata(db, content_id)
+    if not data:
+        return '未取得'
+    fields = data.get('available_fields')
+    if fields is None:
+        fields = ['説明文', '投稿者名']  # 従来の取得レコード
+    return '取得：' + '・'.join(fields) + '（その他は未取得）'

@@ -26,7 +26,7 @@ labels = {c['id']:f"#{c['id']} {c['platform']}｜{c['title']}" for c in all_cont
 register, library, notes_tab, relations_tab, comparison = st.tabs(['登録', '検索・閲覧', '分析メモ', '投稿の関係', '比較・CSV出力'])
 with register:
     st.subheader('TikTokのURLから公開情報を取得')
-    st.caption('公式oEmbedから説明文・投稿者名を取得します。料金・APIキーは不要です。動画を視聴した分析や、冒頭画像・音声の抽出は行いません。')
+    st.caption('公式oEmbedから取得できた情報だけを表示します。説明文・投稿者名が返らない動画もあります。料金・APIキーは不要です。動画を視聴した分析や、冒頭画像・音声の抽出は行いません。')
     with st.form('tiktok_url'):
         tiktok_url = st.text_input('TikTok動画のURL', placeholder='https://www.tiktok.com/@投稿者/video/数字')
         fetch_clicked = st.form_submit_button('TikTokの公開情報を取得')
@@ -40,8 +40,16 @@ with register:
     if 'tiktok_preview' in st.session_state:
         preview = st.session_state['tiktok_preview']
         st.write('取得元：' + preview['provider'])
-        st.write('投稿者：' + preview['author'])
-        st.text(preview['caption'] or '説明文は空です。')
+        st.write('投稿者：' + (preview['author'] if preview['author'] is not None else '未取得'))
+        st.text('説明文：未取得' if preview['caption'] is None else preview['caption'] or '説明文は空です。')
+        if preview.get('embed_available'):
+            st.caption('公式プレーヤー情報を取得しました。再生可否はブラウザ上で確認してください。')
+            if st.checkbox('TikTokの公式プレーヤーを表示（ブラウザからTikTokへ接続）'):
+                import streamlit.components.v1 as components
+                import re
+                video_id = preview['video_id']
+                if re.fullmatch(r'[0-9]+', video_id):
+                    components.iframe(f'https://www.tiktok.com/player/v1/{video_id}?autoplay=0&description=1&music_info=1',height=600,scrolling=True)
         st.caption('取得時刻（UTC）：' + preview['retrieved_at'])
         st.warning('未取得：' + '・'.join(preview['unavailable']) + '。説明文の記載内容が事実かどうかも未確認です。')
         if st.button('取得した公開情報を保存'):
@@ -93,7 +101,7 @@ with library:
             st.write({'URL':c['url'],'投稿者':c['author'],'投稿本文':c['body'],'タグ':c['tags'],'登録日時（UTC）':c['created_at']})
             metadata = store.public_metadata(db,c['id'])
             if metadata:
-                st.caption('説明文・投稿者名：TikTok公式oEmbedから取得 ／ AI解析：未実施')
+                st.caption(store.metadata_status(db,c['id']) + ' ／ AI解析：未実施')
                 st.caption('取得時刻（UTC）：' + metadata['retrieved_at'])
                 st.caption('未取得：' + '・'.join(metadata['unavailable']))
             else:
@@ -163,13 +171,13 @@ with comparison:
         table = {}
         for c in selected_contents:
             if c['id'] in choices:
-                entry = {'SNS':c['platform'],'URL':c['url'],'タグ':c['tags'],'長さ（秒）':str(c['duration']) if c['duration'] is not None else '未取得','SNSメタデータ':'説明文・投稿者名を取得（他は未取得）' if c['source']=='TikTok公式oEmbed' else '未取得','AI解析':'未実施'}
+                entry = {'SNS':c['platform'],'URL':c['url'],'タグ':c['tags'],'長さ（秒）':str(c['duration']) if c['duration'] is not None else '未取得','SNSメタデータ':store.metadata_status(db,c['id']),'AI解析':'未実施'}
                 for category in store.CATEGORIES:
                     entry[category] = '\n'.join(f"【{n['status']}】{n['text']}（根拠：{n['evidence'] or '未記録'}）" for n in all_notes if n['content_id']==c['id'] and n['category']==category) or '未記録'
                 table[labels[c['id']]] = entry
         st.dataframe(pd.DataFrame(table),width='stretch')
     st.caption('比較は手動メモの一覧です。成功の因果関係や販売実績は自動判定しません。')
-    export_contents = [{**c,'sns_metadata_status':'説明文・投稿者名を取得（他は未取得）' if c['source']=='TikTok公式oEmbed' else '未取得', 'metadata_provenance':json.dumps(store.public_metadata(db,c['id']),ensure_ascii=False),'ai_analysis_status':'未実施'} for c in selected_contents]
+    export_contents = [{**c,'sns_metadata_status':store.metadata_status(db,c['id']), 'metadata_provenance':json.dumps(store.public_metadata(db,c['id']),ensure_ascii=False),'ai_analysis_status':'未実施'} for c in selected_contents]
     export_notes = [n for n in all_notes if n['content_id'] in ids]
     export_relations = [r for r in store.rows(db,'relations') if r['source_id'] in ids and r['target_id'] in ids]
     for label,records,filename in [('コンテンツ',export_contents,'contents.csv'),('メモ',export_notes,'notes.csv'),('関係',export_relations,'relations.csv')]:

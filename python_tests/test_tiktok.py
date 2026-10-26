@@ -52,3 +52,36 @@ def test_ui_preview_save_and_error(monkeypatch,tmp_path):
     next(e for e in at.button if e.label=='TikTokの公開情報を取得').click().run()
     assert len(at.error)==1
     assert 'tiktok_preview' not in at.session_state
+
+def test_actual_embed_only_response(monkeypatch,tmp_path):
+    # 実URLで確認した応答形式：タイトル・投稿者なし、プレーヤー情報のみ。
+    payload = {'version':'1.0','type':'video','provider_name':'TikTok',
+               'embed_product_id':'7663801543338200341','embed_type':'video',
+               'html':'<iframe>untrusted HTML is not rendered</iframe>'}
+    monkeypatch.setattr('providers.tiktok.requests.get',Mock(return_value=Mock(status_code=200,json=lambda:payload)))
+    data = fetch_public_metadata(URL)
+    assert data['caption'] is None and data['author'] is None
+    assert data['embed_available']
+    assert data['available_fields'] == ['公式プレーヤー情報']
+    assert '説明文' in data['unavailable']
+    db = store.connect(tmp_path/'test.db')
+    item_id = store.save_public_metadata(db,data)
+    item = store.contents(db)[0]
+    assert item['body'] == '' and item['author'] == ''
+    assert store.metadata_status(db,item_id) == '取得：公式プレーヤー情報（その他は未取得）'
+    db.close()
+    monkeypatch.setenv('RESEARCH_DATA_DIR',str(tmp_path/'ui'))
+    at = AppTest.from_file('app.py').run()
+    next(e for e in at.text_input if e.label=='TikTok動画のURL').input(URL)
+    next(e for e in at.button if e.label=='TikTokの公開情報を取得').click().run()
+    assert not at.exception and not at.error
+    assert any(e.value == '説明文：未取得' for e in at.text)
+    assert any('公式プレーヤー' in e.label for e in at.checkbox)
+    next(e for e in at.button if e.label=='取得した公開情報を保存').click().run()
+    assert not at.exception
+    assert any('公式プレーヤー情報' in e.value for e in at.caption)
+
+def test_unrelated_embed_is_not_accepted(monkeypatch):
+    payload = {'type':'video','provider_name':'TikTok','embed_product_id':'123'}
+    monkeypatch.setattr('providers.tiktok.requests.get',Mock(return_value=Mock(status_code=200,json=lambda:payload)))
+    with pytest.raises(TikTokError): fetch_public_metadata(URL)
