@@ -6,13 +6,14 @@ import pandas as pd
 import streamlit as st
 from research import store
 from research.video import inspect_upload
+from providers.tiktok import fetch_public_metadata, TikTokError
 
 st.set_page_config(page_title='Beauty Research | 横断リサーチ', page_icon='🔎', layout='wide')
 DATA = Path(os.environ.get('RESEARCH_DATA_DIR', str(Path(__file__).parent / 'data'))).resolve()
 db = store.connect(DATA / 'research.sqlite3')
 st.title('🔎 Beauty Research')
 st.caption('TikTok・YouTube・Xを横断する、美容コンテンツのリサーチノート')
-st.info('第1段階：手動登録とローカル動画分析。SNSからの自動取得・AI解析は未接続です。外部APIへの送信は行いません。')
+st.info('TikTokのURLから公式公開情報を取得できます。動画本体・音声の取得とAI解析は未実装です。取得ボタンを押した場合だけ、追跡パラメーターを除いた動画URLをTikTokへ送信します。')
 with st.sidebar:
     st.header('リサーチの範囲')
     query = st.text_input('キーワード検索', placeholder='タイトル・投稿本文・タグ・メモ')
@@ -24,7 +25,32 @@ selected_contents = store.contents(db, query, platform_filter)
 labels = {c['id']:f"#{c['id']} {c['platform']}｜{c['title']}" for c in all_contents}
 register, library, notes_tab, relations_tab, comparison = st.tabs(['登録', '検索・閲覧', '分析メモ', '投稿の関係', '比較・CSV出力'])
 with register:
-    st.subheader('コンテンツを登録')
+    st.subheader('TikTokのURLから公開情報を取得')
+    st.caption('公式oEmbedから説明文・投稿者名を取得します。料金・APIキーは不要です。動画を視聴した分析や、冒頭画像・音声の抽出は行いません。')
+    with st.form('tiktok_url'):
+        tiktok_url = st.text_input('TikTok動画のURL', placeholder='https://www.tiktok.com/@投稿者/video/数字')
+        fetch_clicked = st.form_submit_button('TikTokの公開情報を取得')
+    if fetch_clicked:
+        st.session_state.pop('tiktok_preview', None)
+        try:
+            with st.spinner('TikTok公式の公開情報を確認中…'):
+                st.session_state['tiktok_preview'] = fetch_public_metadata(tiktok_url)
+        except TikTokError as exc:
+            st.error(str(exc))
+    if 'tiktok_preview' in st.session_state:
+        preview = st.session_state['tiktok_preview']
+        st.write('取得元：' + preview['provider'])
+        st.write('投稿者：' + preview['author'])
+        st.text(preview['caption'] or '説明文は空です。')
+        st.caption('取得時刻（UTC）：' + preview['retrieved_at'])
+        st.warning('未取得：' + '・'.join(preview['unavailable']) + '。説明文の記載内容が事実かどうかも未確認です。')
+        if st.button('取得した公開情報を保存'):
+            store.save_public_metadata(db, preview)
+            st.session_state.pop('tiktok_preview', None)
+            db.close()
+            st.rerun()
+    st.divider()
+    st.subheader('コンテンツを手動登録')
     st.caption('権利を持つ動画・利用許諾のある動画だけをアップロードしてください。登録情報と動画はこの環境のdataフォルダーに保存されます。')
     with st.form('register',clear_on_submit=True):
         platform = st.selectbox('プラットフォーム',store.PLATFORMS)
@@ -63,9 +89,15 @@ with library:
         st.write('登録データがありません。登録タブから追加してください。')
     for c in selected_contents:
         with st.expander(labels[c['id']]):
-            st.write('登録情報の出所：ユーザー入力（SNSでの事実確認は未実施）')
+            st.write('登録情報の出所：' + c['source'])
             st.write({'URL':c['url'],'投稿者':c['author'],'投稿本文':c['body'],'タグ':c['tags'],'登録日時（UTC）':c['created_at']})
-            st.caption('SNSメタデータ：未取得 ／ AI解析：未実施')
+            metadata = store.public_metadata(db,c['id'])
+            if metadata:
+                st.caption('説明文・投稿者名：TikTok公式oEmbedから取得 ／ AI解析：未実施')
+                st.caption('取得時刻（UTC）：' + metadata['retrieved_at'])
+                st.caption('未取得：' + '・'.join(metadata['unavailable']))
+            else:
+                st.caption('SNSメタデータ：未取得 ／ AI解析：未実施')
             if c['duration'] is not None:
                 st.metric('動画の長さ（ローカル抽出）',f"{c['duration']:.2f} 秒")
                 if Path(c['video_path']).is_file():
@@ -131,13 +163,13 @@ with comparison:
         table = {}
         for c in selected_contents:
             if c['id'] in choices:
-                entry = {'SNS':c['platform'],'URL':c['url'],'タグ':c['tags'],'長さ（秒）':str(c['duration']) if c['duration'] is not None else '未取得','SNSメタデータ':'未取得','AI解析':'未実施'}
+                entry = {'SNS':c['platform'],'URL':c['url'],'タグ':c['tags'],'長さ（秒）':str(c['duration']) if c['duration'] is not None else '未取得','SNSメタデータ':'説明文・投稿者名を取得（他は未取得）' if c['source']=='TikTok公式oEmbed' else '未取得','AI解析':'未実施'}
                 for category in store.CATEGORIES:
                     entry[category] = '\n'.join(f"【{n['status']}】{n['text']}（根拠：{n['evidence'] or '未記録'}）" for n in all_notes if n['content_id']==c['id'] and n['category']==category) or '未記録'
                 table[labels[c['id']]] = entry
         st.dataframe(pd.DataFrame(table),width='stretch')
     st.caption('比較は手動メモの一覧です。成功の因果関係や販売実績は自動判定しません。')
-    export_contents = [{**c,'sns_metadata_status':'未取得','ai_analysis_status':'未実施'} for c in selected_contents]
+    export_contents = [{**c,'sns_metadata_status':'説明文・投稿者名を取得（他は未取得）' if c['source']=='TikTok公式oEmbed' else '未取得', 'metadata_provenance':json.dumps(store.public_metadata(db,c['id']),ensure_ascii=False),'ai_analysis_status':'未実施'} for c in selected_contents]
     export_notes = [n for n in all_notes if n['content_id'] in ids]
     export_relations = [r for r in store.rows(db,'relations') if r['source_id'] in ids and r['target_id'] in ids]
     for label,records,filename in [('コンテンツ',export_contents,'contents.csv'),('メモ',export_notes,'notes.csv'),('関係',export_relations,'relations.csv')]:

@@ -90,3 +90,25 @@ def export_csv(records):
     for row in records:
         writer.writerow({k: ("'" + v if isinstance(v,str) and v.lstrip().startswith(('=', '+', '-', '@', '\t', '\r')) else v) for k,v in row.items()})
     return output.getvalue().encode('utf-8-sig')
+
+def save_public_metadata(db, data):
+    """手動入力レコードとは別に、取得した項目と出典を保存。"""
+    import json
+    with db:
+        db.execute('''CREATE TABLE IF NOT EXISTS public_metadata (
+          content_id INTEGER PRIMARY KEY REFERENCES contents(id),
+          payload TEXT NOT NULL
+        )''')
+        content_id = add_content(db,'TikTok',data['caption'][:100] or 'TikTok公開情報',
+                                 url=data['url'],author=data['author'],body=data['caption'])
+        db.execute('UPDATE contents SET source=? WHERE id=?',(data['provider'],content_id))
+        db.execute('INSERT INTO public_metadata(content_id,payload) VALUES(?,?)',(content_id,json.dumps(data,ensure_ascii=False)))
+    return content_id
+
+def public_metadata(db, content_id):
+    import json
+    exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_metadata'").fetchone()
+    if not exists:
+        return None
+    row = db.execute('SELECT payload FROM public_metadata WHERE content_id=?',(content_id,)).fetchone()
+    return json.loads(row['payload']) if row else None

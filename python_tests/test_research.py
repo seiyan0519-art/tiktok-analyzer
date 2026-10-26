@@ -69,14 +69,14 @@ def test_ui_registration_note_comparison(tmp_path,monkeypatch):
     at = AppTest.from_file('app.py').run()
     assert not at.exception
     at.selectbox[0].select('X')
-    at.text_input[0].input('美容投稿')
-    at.text_input[1].input('https://x.com/example/status/1')
-    at.button[0].click().run()
+    next(e for e in at.text_input if e.label=='タイトル（必須）').input('美容投稿')
+    next(e for e in at.text_input if e.label=='SNSのURL（ローカル動画以外は必須）').input('https://x.com/example/status/1')
+    next(e for e in at.button if e.label=='保存する').click().run()
     assert not at.exception
     assert len(at.expander) == 1
     at.text_area[1].input('冒頭の商品提示が目立つ')
     at.text_area[2].input('手動で動画0秒を確認')
-    at.button[1].click().run()
+    next(e for e in at.button if e.label=='メモを保存').click().run()
     assert not at.exception
     at.run()
     at.multiselect[0].select(1).run()
